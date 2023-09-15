@@ -135,7 +135,6 @@ private:
 	// @brief 左右の壁を LineTraceで探し、見つかったら進行方向が壁側を向いているかを調べる。
 	// @param WallRunStatus 左右。
 	// @param v 速度ベクトル。
-	// @param OutIsRight 見つかった場合は WallRunStatus を設定する。
 	// @retval EWallRunStatus::WRS_None 見つからなかった。
 	// @retval EWallRunStatus::WRS_Left 左にあった。
 	// @retval EWallRunStatus::WRS_Right 右にあった。
@@ -143,7 +142,6 @@ private:
 
 	// @brief 壁があるか左右の順に調べる。
 	// @param v 速度ベクトル。
-	// @param OutIsRight 見つかった場合は右なら ture 、左なら false を設定する。
 	// @retval EWallRunStatus::WRS_None 見つからなかった。
 	// @retval EWallRunStatus::WRS_Left 左にあった。
 	// @retval EWallRunStatus::WRS_Right 右にあった。
