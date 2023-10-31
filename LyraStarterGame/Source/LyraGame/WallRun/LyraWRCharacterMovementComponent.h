@@ -3,10 +3,27 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "LyraWallRunStamina.h"
 #include "Character/LyraCharacterMovementComponent.h"
 #include "LyraWRCharacterMovementComponent.generated.h"
 
+//	LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
+//		1 の場合
+//			CharacterMovementComponent の SavedMove に WallRun のスタミナに関する変数を保存する実装を有効にする。
+//		0 の場合
+//			CharacterMovementComponent の SavedMove には WallRun の実行可能状態を住めす変数のみを保存する実装を有効にする。
+//			（スタミナのような WallRun 自体ではない実装を MovementComponent 内で管理しないようにする。）
+//	LYRA_WALLRUN_STAMINA_IN_ で始まるマクロについて
+//		ヘッダ内は以下のような記述をしている。
+//			#if 1 // LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
+//		#ifdef や #if の定数式でマクロを利用していないのは UBT がそれらによる UPROPERTY 等の有効/無効の切り替えをサポートしない為（利用しようとするとエラーとなる）。
+//		有効化/無効化する際は該当の #if ディレクティブ等の定数式を書き換えること。
+#define LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE	1
 
+
+/**
+ * @brief このプロジェクトで使用する CustomMovementMode を表す列挙体。
+ */
 UENUM(BlueprintType)
 enum ECustomMovementMode
 {
@@ -16,6 +33,9 @@ enum ECustomMovementMode
 	CMOVE_MAX			UMETA(Hidden),
 };
 
+/**
+ * @brief WallRun の状態を示す列挙体。
+ */
 UENUM(BlueprintType)
 enum class EWallRunStatus : uint8
 {
@@ -26,9 +46,8 @@ enum class EWallRunStatus : uint8
 };
 
 
-
 /**
- * 
+ * @brief CharacterMovementComponent の WallRun 拡張クラス。
  */
 UCLASS()
 class LYRAGAME_API ULyraWRCharacterMovementComponent : public ULyraCharacterMovementComponent
@@ -36,25 +55,106 @@ class LYRAGAME_API ULyraWRCharacterMovementComponent : public ULyraCharacterMove
 	GENERATED_BODY()
 	
 private:
+	// @brief コリジョン判定時に使用する作業用構造体。
 	struct FWallRunCollisionWork
 	{
-		//固定値
+		//`固定値
+
+		// @brief オーナー自身とその子を無視するクエリパラメータ。
 		const FCollisionQueryParams IgnoreCharacterParams;
+
+		// @brief オーナーのカプセルのコリジョンシェイプ。
 		const FCollisionShape CollisionShape;
+
+		// @brief オーナーのカプセルの半径。
 		const float ScaledCapsuleRadius;
+
+		// @brief オーナーのカプセルの HalfHeight 。
 		const float ScaledCapsuleHalfHeight;
-		//移動処理毎に更新する値
+
+		//`End 固定値
+
+		//~移動処理毎に更新する値
+
+		// @brief 移動処理後の UpdatedComponent の Location 。
 		FVector UpdatedComponentLocation;
+
+		// @brief 移動処理後の UpdatedComponent の RightVector 。
 		FVector UpdatedComponentRightVector;
-		//コリジョン判定時に更新する値
+
+		//~End 移動処理毎に更新する値
+
+		//~コリジョン判定時に更新する値
+
+		// @brief トレースの結果。
 		FHitResult Hit;
+
+		//~End コリジョン判定時に更新する値
+	};
+
+private:
+	// @brief WallRUn 用 FSavedMove 構造体。
+	class FSavedMove_WallRun : public FSavedMove_Character
+	{
+	public:
+		typedef FSavedMove_Character Super;
+
+#if 1 // if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
+		// @brief FSavedMove でバッファリングする必要があるスタミナ用データ。
+		FSavedAutoRecoverableAttribute Saved_Stamina;
+#else
+		// @brief WallRun が可能か。
+		uint8 Saved_bEnableWallRun : 1;
+#endif
+
+		/** Clear saved move properties, so it can be re-used. */
+		virtual void Clear() override;
+
+		/** Called to set up this saved move (when initially created) to make a predictive correction. */
+		virtual void SetMoveFor(ACharacter* C, float InDeltaTime, FVector const& NewAccel, class FNetworkPredictionData_Client_Character& ClientData) override;
+
+		/** Set the properties describing the position, etc. of the moved pawn at the start of the move. */
+		virtual void SetInitialPosition(ACharacter* C)override;
+
+		/** Returns true if this move can be combined with NewMove for replication without changing any behavior */
+		virtual bool CanCombineWith(const FSavedMovePtr& NewMove, ACharacter* InCharacter, float MaxDelta) const override;
+
+		/** Combine this move with an older move and update relevant state. */
+		virtual void CombineWith(const FSavedMove_Character* OldMove, ACharacter* InCharacter, APlayerController* PC, const FVector& OldStartLocation)override;
+
+		/** Called before ClientUpdatePosition uses this SavedMove to make a predictive correction	 */
+		/** ClientUpdatePosition がこの SavedMove を使用して予測補正を行う前に呼び出される。	*/
+		virtual void PrepMoveFor(ACharacter* C) override;
+
+		/** Returns a byte containing encoded special movement information (jumping, crouching, etc.)	 */
+		virtual uint8 GetCompressedFlags() const override;
+
+	};
+
+	// @brief WallRUn 用 SavedMove 構造体ファクトリクラス。
+	class FNetworkPredictionData_Client_Character_WallRun : public FNetworkPredictionData_Client_Character
+	{
+		typedef FNetworkPredictionData_Client_Character Super;
+	public:
+		FNetworkPredictionData_Client_Character_WallRun(const UCharacterMovementComponent& ClientMovement);
+
+		/** Allocate a new saved move. Subclasses should override this if they want to use a custom move class. */
+		virtual FSavedMovePtr AllocateNewMove() override;
 	};
 
 public:
 	ULyraWRCharacterMovementComponent(const FObjectInitializer& ObjectInitializer);
 
-	//UCharacterMovementComponent interface begin{
+	//~UCharacterMovementComponent interface
+public:
+	/** Get prediction data for a client game. Should not be used if not running as a client. Allocates the data on demand and can be overridden to allocate a custom override if desired. Result must be a FNetworkPredictionData_Client_Character. */
+	virtual class FNetworkPredictionData_Client* GetPredictionData_Client() const override;
+
 protected:
+	/** Unpack compressed flags from a saved move and set state accordingly. See FSavedMove_Character. */
+	/** 保存された移動から圧縮されたフラグを解凍し、それに応じて状態を設定する。 FSavedMove_Character を参照。	*/
+	virtual void UpdateFromCompressedFlags(uint8 Flags)override;
+
 	/** Update the character state in PerformMovement right before doing the actual position change */
 	virtual void UpdateCharacterStateBeforeMovement(float DeltaSeconds) override;
 
@@ -81,28 +181,80 @@ public:
 	 */
 	virtual bool CanAttemptJump() const override;
 
-	//}UCharacterMovementComponent interface end
+	//~End UCharacterMovementComponent interface end
 
-	//BEGIN UMovementComponent Interface
+	//~UMovementComponent Interface
 public:
 	virtual float GetMaxSpeed() const override;
 
-	//END UMovementComponent Interface
+	//~End UMovementComponent Interface
 
 
+	//~static Blueprint Callable functions
+public:
+	// @brief 任意の MovementMode/CustomMovementMode を渡し、 WallRun かどうかを判定する。
+	// @param InMovementMode MovementMode 。
+	// @param InCustomMovementMode CustomMovementMode 。
+	// @retval true WallRun である。
+	// @retval false WallRun ではない。
+	UFUNCTION(BlueprintPure, Category = "LyraWR|WallRun") static bool IsWallRunMode(EMovementMode InMovementMode, uint8 InCustomMovementMode)
+	{
+		return InMovementMode == EMovementMode::MOVE_Custom && ((InCustomMovementMode == CMOVE_WallRunLeft) || (InCustomMovementMode == CMOVE_WallRunRight));
+	}
 
+	//~End static Blueprint Callable functions
+
+	//~Blueprint Callable functions
+public:
+	// @brief 任意の MovementMode を渡し、現在の MovementMode と同じかを過判定する。
+	// @param InMovementMode MovementMode 。
+	// @retval true 同じ。
+	// @retval false 異なる。
+	UFUNCTION(BlueprintPure, Category = "LyraWR|WallRun") bool IsCustomMovementMode(ECustomMovementMode InCustomMovementMode)const;
+
+	// @brief 任意の CustomMovementMode を渡し、現在の CustomMovementMode と同じかを過判定する。
+	// @param InCustomMovementMode CustomMovementMode 。
+	// @retval true 同じ。
+	// @retval false 異なる。
+	UFUNCTION(BlueprintPure, Category = "LyraWR|WallRun") bool IsMovementMode(EMovementMode InMovementMode)const;
+
+	//~WallRun functions
+	// 
+	// @brief 現在の MovementMode/CustomMovementMode から WallRun の状態を取得する。
+	// @return WallRun の状態。
+	UFUNCTION(BlueprintPure, Category = "LyraWR|WallRun") EWallRunStatus GetWallRunStatus()const;
+
+	// @brief 現在の WallRun の対象の壁の法線を取得する。
+	// @return 壁の法線。
+	UFUNCTION(BlueprintPure, Category = "LyraWR|WallRun") FVector GetWallRunNormal()const { return WallNormal; };
+
+	//~End WallRun functions
+
+	//~End Blueprint Callable functions
 
 public:
-	UFUNCTION(BlueprintPure) bool IsCustomMovementMode(ECustomMovementMode InCustomMovementMode)const;
-	UFUNCTION(BlueprintPure) bool IsMovementMode(EMovementMode InMovementMode)const;
+#if 1 // if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
+#else
+	// @brief WallRun の実行可能状態の設定。
+	// @param bEnableWallRun WallRun が実行可能かどうか。
+	void SetWallRunEnable(bool bEnableWallRun);
+#endif
+	// @brief WallRun の実行可能状態を取得する。
+	// @retval true 実行可能。
+	// @retval false 実行不可。
+	bool IsWallRunEnable()const;
 
-	//WallRun
-	UFUNCTION(BlueprintPure, Category = "LyraWR|WallRun") EWallRunStatus GetWallRunStatus()const;
-	UFUNCTION(BlueprintPure, Category = "LyraWR|WallRun") FVector GetWallRunNormal()const { return WallRunNormal; };
 
-	//WallRun
+	//~WallRun functions
 private:
+	// @brief WallRun の開始をトライする。
+	// @retvalue true WallRun を開始した。
+	// @retvalue false WallRun を開始しなかった。
 	bool TryWallRun();
+
+	// @brief WallRun の物理処理。
+	// @param deltaTime 前回の処理からのデルタ時間。
+	// @param Iterations 現在の物理処理のイテレーション回数。
 	void PhysWallRun(float deltaTime, int32 Iterations);
 
 	// @brief 現在の位置から LineTrace を行う。
@@ -169,10 +321,10 @@ private:
 
 	// @brief 現在の加速ベクトルが壁から離れる値かを調べる。
 	// @param a 加速度ベクトル。
-	// @param WallNormal 壁の法線。
+	// @param CurrentWallNormal 壁の法線。
 	// @retval true 離れる。
 	// @retval false 離れない。
-	bool WallRun_IsPullAway(const FVector& a, const FVector& WallNormal)const;
+	bool WallRun_IsPullAway(const FVector& a, const FVector& CurrentWallNormal)const;
 
 	// @brief 渡されたベクトルが WallRun できる値かを調べる。
 	// @param v 調べる値。
@@ -198,36 +350,57 @@ private:
 	// @param WallRunStatus 左右。 None を渡すと ZeroVector を返す。
 	// @param Delta 予定していた移動ベクトル。
 	// @param DeltaN 実際の移動ベクトル。
-	// @param WallNormal ぶつかった壁の法線。
+	// @param CurrentWallNormal ぶつかった壁の法線。
 	// @return 移動したい、ぶつかった壁に沿った移動ベクトル。
-	FVector WallRun_CalcDeltaAfterBlocked(EWallRunStatus WallRunStatus, const FVector& Delta, const FVector& DeltaN, const FVector& WallNormal)const;
+	FVector WallRun_CalcDeltaAfterBlocked(EWallRunStatus WallRunStatus, const FVector& Delta, const FVector& DeltaN, const FVector& CurrentWallNormal)const;
 
-	// @brief FWallRunCollisionWork の初期化を行う
-	// @param IsInitCollisionShape CollisionShape の初期化を行うか
-	// @return FWallRunCollisionWork
+	// @brief FWallRunCollisionWork の初期化を行う。
+	// @param IsInitCollisionShape CollisionShape の初期化を行うか。
+	// @return FWallRunCollisionWork 。
 	FWallRunCollisionWork WallRun_InitWork(bool IsInitCollisionShape)const;
 
-	//Helper
+	//~End WallRun functions
+
+	//~Helper functions
 private:
-	// @brief オーナーのカプセルの半径を取得する
-	// @return カプセルの半径
+	// @brief オーナーのカプセルの半径を取得する。
+	// @return カプセルの半径。
 	float CapR()const;
 
-	// @brief オーナーのカプセルの HalfHeight を取得する
-	// @return カプセルの HalfHeight
+	// @brief オーナーのカプセルの HalfHeight を取得する。
+	// @return カプセルの HalfHeight 。
 	float CapHH()const;
 
-	// @brief オーナー自身とその子を無視するクエリパラメータを取得する
-	// @return クエリパラメータ
+	// @brief オーナー自身とその子を無視するクエリパラメータを取得する。
+	// @return クエリパラメータ。
 	FCollisionQueryParams GetIgnoreCharacterParams() const;
 
-	//WallRun
+	//~End Helper functions
+
+
+#if 1 // if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
+	//~Stamina functions
+public:
+	// @brief Settings を取得する。
+	// @return Settings 。
+	const FAutoRecoverableAttributeSetting& GetWallRunSettings()const;
+
 private:
-	// @brief 壁の法線。 WallRun していないときは ZeroVector になる。
-	FVector WallRunNormal;
+	// @brief MovementMode が WallRun に変わった/ではなくなった際に呼び出される。
+	// @param bStart true WallRun に変わった, false WallRun ではなくなった。
+	void MovementModeChangedToWallRun(bool bStart);
+
+	// @brief Stamina を更新する。
+	// @param DeltaSeconds デルタ時間。
+	void UpdateStamina(float DeltaSeconds);
+
+	//~End Helper functions
+
+#else
+#endif
 
 
-	//WallRun
+	//~WallRun Properties
 protected:
 	// Velocity の下限[cm/s]。
 	// これを下回ると WallRun を中断する。
@@ -238,7 +411,7 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "LyraWR|WallRun") float MaxWallRunSpeed = 800.f;
 
 	// 上昇速度の上限[cm/s]。
-	// WallRun 開始の際、上下の速度は clamp(0, この値 ) される。
+	// WallRun 開始の際、上下の速度は clamp(velocity.z, 0, MaxVerticalUpWallRunSpeed) される。
 	UPROPERTY(EditDefaultsOnly, Category = "LyraWR|WallRun") float MaxVerticalUpWallRunSpeed = 200.f;
 
 	// 下降速度の上限[cm/s]。
@@ -274,4 +447,27 @@ protected:
 	// WallRun 中に発生する重力加速度の係数。
 	// 速度と加速度の余弦がパラメータとなる。
 	UPROPERTY(EditDefaultsOnly, Category = "LyraWR|WallRun") UCurveFloat* WallRunGravityScaleCurve;
+
+	//~End WallRun Properties
+
+	//~Stamina Properties
+#if 1 // if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
+protected:
+	// @brief スタミナの状況。設定用の構造体を内包するので、 Blueprint で設定可能にしている。
+	UPROPERTY(EditDefaultsOnly, Category = "LyraWR|WallRun") FSafeAutoRecoverableAttribute	Stamina;
+#else
+#endif
+
+	//~End Stamina Properties
+
+
+private:
+#if 1 // if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
+#else
+	// @brief WallRun の実行可能状態。 
+	bool Safe_bEnableWallRun;
+#endif
+
+	// @brief 壁の法線。 WallRun していないときは ZeroVector になる。
+	FVector WallNormal;
 };

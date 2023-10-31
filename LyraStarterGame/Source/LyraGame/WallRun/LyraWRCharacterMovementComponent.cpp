@@ -1,11 +1,24 @@
 // Copyright 2023 Sentya Anko
 
 
-#include "Character/LyraWRCharacterMovementComponent.h"
+#include "LyraWRCharacterMovementComponent.h"
+#include "LyraWallRunStaminaMessage.h"
+
 #include "Character/LyraCharacter.h"
 #include "GameFramework/Character.h"
 #include "Components/CapsuleComponent.h"
 #include "Net/UnrealNetwork.h"
+
+#include "Interaction/LyraInteractionDurationMessage.h"
+#include "GameFramework/GameplayMessageSubsystem.h"
+
+#include "Kismet/KismetSystemLibrary.h"
+
+
+#if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
+UE_DEFINE_GAMEPLAY_TAG_STATIC(TAG_Ability_WallRun_Stamina_Message, "Ability.WallRun.Stamina.Message");
+
+#endif
 
 //Helper Macros
 
@@ -39,9 +52,107 @@ float MacroDuration = 10.f;
 #endif
 
 
+//------------------------------------------------------------------------------
+
+void ULyraWRCharacterMovementComponent::FSavedMove_WallRun::Clear()
+{
+	Super::Clear();
+#if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
+	Saved_Stamina = FSavedAutoRecoverableAttribute();
+#else
+	Saved_bEnableWallRun = true;
+#endif
+}
+
+void ULyraWRCharacterMovementComponent::FSavedMove_WallRun::SetMoveFor(ACharacter* C, float InDeltaTime, FVector const& NewAccel, FNetworkPredictionData_Client_Character& ClientData)
+{
+	Super::SetMoveFor(C, InDeltaTime, NewAccel, ClientData);
+	//SetInitialPosition() で行うのでここでは特に何もしない。
+}
+
+void ULyraWRCharacterMovementComponent::FSavedMove_WallRun::SetInitialPosition(ACharacter* C)
+{
+	Super::SetInitialPosition(C);
+
+	auto CharacterMovement = Cast< ULyraWRCharacterMovementComponent>(C->GetCharacterMovement());
+#if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
+	Saved_Stamina = CharacterMovement->Stamina.GetSaved();
+#else
+	Saved_bEnableWallRun = CharacterMovement->Safe_bEnableWallRun;
+#endif
+}
+
+bool ULyraWRCharacterMovementComponent::FSavedMove_WallRun::CanCombineWith(const FSavedMovePtr& NewMove, ACharacter* InCharacter, float MaxDelta) const
+{
+	auto NewWallRunMove = static_cast<FSavedMove_WallRun*>(NewMove.Get());
+
+#if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
+	if (!FSavedAutoRecoverableAttribute::CanCombineWith(Saved_Stamina, NewWallRunMove->Saved_Stamina))
+#else
+	if (Saved_bEnableWallRun != NewWallRunMove->Saved_bEnableWallRun)
+#endif
+	{
+		return false;
+	}
+
+	return Super::CanCombineWith(NewMove, InCharacter, MaxDelta);
+}
+
+void ULyraWRCharacterMovementComponent::FSavedMove_WallRun::CombineWith(const FSavedMove_Character* OldMove, ACharacter* InCharacter, APlayerController* PC, const FVector& OldStartLocation)
+{
+	Super::CombineWith(OldMove, InCharacter, PC, OldStartLocation);
+
+#if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
+	auto CharacterMovement = Cast< ULyraWRCharacterMovementComponent>(InCharacter->GetCharacterMovement());
+	auto OldWallRunMove = static_cast<const FSavedMove_WallRun*>(OldMove);
+	CharacterMovement->Stamina.GetSaved() = OldWallRunMove->Saved_Stamina;
+#else
+	//Saved_bEnableWallRun が異なるとコンバインしないので、ここでやることはない。
+#endif
+}
+
+void ULyraWRCharacterMovementComponent::FSavedMove_WallRun::PrepMoveFor(ACharacter* C)
+{
+	Super::PrepMoveFor(C);
+
+	auto CharacterMovement = Cast< ULyraWRCharacterMovementComponent>(C->GetCharacterMovement());
+#if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
+	CharacterMovement->Stamina.GetSaved() = Saved_Stamina;
+#else
+	//CharacterMovement->Safe_bEnableWallRun = Saved_bEnableWallRun;
+	CharacterMovement->SetWallRunEnable(Saved_bEnableWallRun);
+#endif
+}
+
+uint8 ULyraWRCharacterMovementComponent::FSavedMove_WallRun::GetCompressedFlags() const
+{
+	return Super::GetCompressedFlags();
+}
+
+//------------------------------------------------------------------------------
+
+ULyraWRCharacterMovementComponent::FNetworkPredictionData_Client_Character_WallRun::FNetworkPredictionData_Client_Character_WallRun(const UCharacterMovementComponent& ClientMovement)
+	:Super(ClientMovement)
+{
+}
+
+FSavedMovePtr ULyraWRCharacterMovementComponent::FNetworkPredictionData_Client_Character_WallRun::AllocateNewMove()
+{
+	return FSavedMovePtr(new FSavedMove_WallRun());
+}
+
+
+//------------------------------------------------------------------------------
+
+
 ULyraWRCharacterMovementComponent::ULyraWRCharacterMovementComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
-	, WallRunNormal(0.f)
+#if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
+	, Stamina()
+#else
+	, Safe_bEnableWallRun(true)
+#endif
+	, WallNormal(0.f)
 {
 	//Maximum distance character is allowed to lag behind server location when interpolating between updates.
 	//更新の間を補間する際に、キャラクターがサーバーの位置から遅れることを許容する最大距離。
@@ -52,14 +163,50 @@ ULyraWRCharacterMovementComponent::ULyraWRCharacterMovementComponent(const FObje
 	//キャラクターがスムージングなしで新しいサーバー位置にテレポートされる最大距離。
 	//基底クラスのデフォルト値は  384.f 。
 	NetworkNoSmoothUpdateDistance = 140.f;
+
+	//UKismetSystemLibrary::PrintString(this, FString::Printf(TEXT("WallRun XX: %d, %d, %d"), (int)XX::CustomModeThr, (int)XX::GroundMask, (int)XX::GroundShift), false);
+
+	//コンストラクタでは呼べない。
+	//SetIsReplicated(true);
+	//呼ぶならこちら。(今は何もレプリケーションしていないのでコメントアウト)
+	//SetIsReplicatedByDefault(true);
+
+}
+
+FNetworkPredictionData_Client* ULyraWRCharacterMovementComponent::GetPredictionData_Client() const
+{
+	check(PawnOwner != nullptr);
+	if (ClientPredictionData == nullptr)
+	{
+		auto MutableThis = const_cast<ULyraWRCharacterMovementComponent*>(this);
+		MutableThis->ClientPredictionData = new FNetworkPredictionData_Client_Character_WallRun(*this);
+		//MutableThis->ClientPredictionData->MaxSmoothNetUpdateDist = 92.f;
+		//MutableThis->ClientPredictionData->NoSmoothNetUpdateDist = 140.f;
+	}
+	return ClientPredictionData;
+}
+
+void ULyraWRCharacterMovementComponent::UpdateFromCompressedFlags(uint8 Flags)
+{
+	Super::UpdateFromCompressedFlags(Flags);
+	//圧縮フラグを使っていないのでやることはない。
 }
 
 void ULyraWRCharacterMovementComponent::UpdateCharacterStateBeforeMovement(float DeltaSeconds)
 {
-	//WallRun
+#if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
+	UpdateStamina(DeltaSeconds);
+#else
+#endif
+
 	if (IsFalling())
 	{
 		TryWallRun();
+	}
+	else if (GetWallRunStatus() != EWallRunStatus::WRS_None && !IsWallRunEnable())
+	{
+		//継続できない場合は終わらす
+		SetMovementMode(MOVE_Falling);
 	}
 
 	Super::UpdateCharacterStateBeforeMovement(DeltaSeconds);
@@ -84,32 +231,51 @@ void ULyraWRCharacterMovementComponent::PhysCustom(float deltaTime, int32 Iterat
 void ULyraWRCharacterMovementComponent::OnMovementModeChanged(EMovementMode PreviousMovementMode, uint8 PreviousCustomMode)
 {
 	Super::OnMovementModeChanged(PreviousMovementMode, PreviousCustomMode);
-	if (PreviousMovementMode == MOVE_Custom)
+
+	//複数の CustomMovementMode を制御するならば、 switch 文を利用する方が良いが、このクラスは WallRun しか見ていないので判定関数で済ませてしまう。
+	if (IsWallRunMode(MovementMode, CustomMovementMode))
 	{
-		switch (PreviousCustomMode)
+		//ROLE_SimulatedProxy は WallNormal が未設定。
+		if (WallNormal.IsNearlyZero())
 		{
-		case CMOVE_WallRunLeft:
-		case CMOVE_WallRunRight:
-			WallRunNormal = FVector::ZeroVector;
-			break;
+			// FCollisionQueryParams などの取得(CollisionShape はここでは使わないので省略)
+			auto work = WallRun_InitWork(false);
+
+			if (WallRunCollision_LineTraceWall(work, GetWallRunStatus()))
+			{
+				WallNormal = work.Hit.Normal;
+				//UKismetSystemLibrary::PrintString(PawnOwner, FString::Printf(TEXT("WallRun OnMovementModeChanged Init WallRuNormal")), false);
+			}
 		}
+#if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
+		//WallRun を始めた。
+		MovementModeChangedToWallRun(true);
+#else
+#endif
+	}
+	
+	if (IsWallRunMode(PreviousMovementMode, PreviousCustomMode))
+	{
+		WallNormal = FVector::ZeroVector;
+
+#if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
+		//WallRun を止めた。
+		MovementModeChangedToWallRun(false);
+#else
+#endif
 	}
 }
 
 float ULyraWRCharacterMovementComponent::GetMaxBrakingDeceleration() const
 {
-	if (MovementMode != MOVE_Custom)
+	//複数の CustomMovementMode を制御するならば、 switch 文を利用する方が良いが、このクラスは WallRun しか見ていないので判定関数で済ませてしまう。
+	if (IsWallRunMode(MovementMode, CustomMovementMode))
+	{
+		return 0.f;
+	}
+	else
 	{
 		return Super::GetMaxBrakingDeceleration();
-	}
-	switch (CustomMovementMode)
-	{
-	case CMOVE_WallRunLeft:
-	case CMOVE_WallRunRight:
-		return 0.f;
-	default:
-		UE_LOG(LogTemp, Fatal, TEXT("Invalid Movement Mode"));
-		return -1.f;
 	}
 }
 
@@ -148,18 +314,14 @@ bool ULyraWRCharacterMovementComponent::CanAttemptJump() const
 
 float ULyraWRCharacterMovementComponent::GetMaxSpeed() const
 {
-	if (MovementMode != MOVE_Custom)
+	//複数の CustomMovementMode を制御するならば、 switch 文を利用する方が良いが、このクラスは WallRun しか見ていないので判定関数で済ませてしまう。
+	if (IsWallRunMode(MovementMode, CustomMovementMode))
+	{
+		return MaxWallRunSpeed;
+	}
+	else
 	{
 		return Super::GetMaxSpeed();
-	}
-	switch (CustomMovementMode)
-	{
-	case CMOVE_WallRunLeft:
-	case CMOVE_WallRunRight:
-		return MaxWallRunSpeed;
-	default:
-		UE_LOG(LogTemp, Fatal, TEXT("Invalid Movement Mode"));
-		return -1.f;
 	}
 }
 
@@ -191,6 +353,10 @@ bool ULyraWRCharacterMovementComponent::TryWallRun()
 	if (!IsFalling())
 		return false;
 
+	//実行できない状態だと失敗
+	if (!IsWallRunEnable())
+		return false;
+
 	//平面速度が足りない or 落下速度が速いと失敗
 	if (!WallRun_IsEnoughVelocity(Velocity, true))
 		return false;
@@ -217,8 +383,8 @@ bool ULyraWRCharacterMovementComponent::TryWallRun()
 	//Phys 関数のために Velocity を書き換えておく
 	Velocity = ProjectedVelocity;
 	Velocity.Z = FMath::Clamp(Velocity.Z, 0.f, MaxVerticalUpWallRunSpeed);
+	WallNormal = work.Hit.Normal;
 	SetMovementMode(MOVE_Custom, WallRunStatus == EWallRunStatus::WRS_Right ? CMOVE_WallRunRight : CMOVE_WallRunLeft);
-	WallRunNormal = work.Hit.Normal;
 	//	WALLRUN_SLOG("StartingWallRun");
 	return true;
 }
@@ -244,6 +410,15 @@ void ULyraWRCharacterMovementComponent::PhysWallRun(float deltaTime, int32 Itera
 	if (WallRunStatus == EWallRunStatus::WRS_None)
 	{
 		//向きが取れない場合は終わらす
+		SetMovementMode(MOVE_Falling);
+		StartNewPhysics(deltaTime, Iterations);
+		return;
+	}
+
+	//実行できない状態だと失敗
+	if (!IsWallRunEnable())
+	{
+		//継続できない場合は終わらす
 		SetMovementMode(MOVE_Falling);
 		StartNewPhysics(deltaTime, Iterations);
 		return;
@@ -282,7 +457,7 @@ void ULyraWRCharacterMovementComponent::PhysWallRun(float deltaTime, int32 Itera
 			return;
 		}
 		//壁に沿う移動後、壁に寄る際に参照
-		auto WallNormal = work.Hit.Normal;
+		auto CurrentWallNormal = work.Hit.Normal;
 
 		//速度不足で Falling に移行する際に値を戻せるように取っておく
 		auto preAcceleration = Acceleration;
@@ -290,7 +465,7 @@ void ULyraWRCharacterMovementComponent::PhysWallRun(float deltaTime, int32 Itera
 
 		//Clamp Acceleration
 		//Acceleration を壁に投影し、 Z 軸成分を消す
-		Acceleration = FVector::VectorPlaneProject(Acceleration, WallNormal);
+		Acceleration = FVector::VectorPlaneProject(Acceleration, CurrentWallNormal);
 		Acceleration.Z = 0.f;
 
 		//Apply acceralation
@@ -298,7 +473,7 @@ void ULyraWRCharacterMovementComponent::PhysWallRun(float deltaTime, int32 Itera
 		CalcVelocity(timeTick, 0.f, false, GetMaxBrakingDeceleration());
 
 		//Velocity を壁に投影する
-		Velocity = FVector::VectorPlaneProject(Velocity, WallNormal);
+		Velocity = FVector::VectorPlaneProject(Velocity, CurrentWallNormal);
 
 		//移動方向と加速方向を元に、落下速度の係数を決める
 		Velocity.Z += GetGravityZ() * WallRun_GetGravityWall(Acceleration, Velocity) * timeTick;
@@ -329,11 +504,11 @@ void ULyraWRCharacterMovementComponent::PhysWallRun(float deltaTime, int32 Itera
 #if 0 // delgoodie original
 			FHitResult Hit;
 			SafeMoveUpdatedComponent(Delta, UpdatedComponent->GetComponentQuat(), true, Hit);
-			auto WallAttractionDelta = -WallNormal * WallRunAttractionVelocityScale * timeTick;
+			auto WallAttractionDelta = -CurrentWallNormal * WallRunAttractionVelocityScale * timeTick;
 			SafeMoveUpdatedComponent(WallAttractionDelta, UpdatedComponent->GetComponentQuat(), true, Hit);
 #else
 			// 壁に押し付けてる都合上、壁と壁のエッジに詰まることがあるため、壁沿いに移動する前に壁から少しだけ離れる
-			SafeMoveUpdatedComponent(WallNormal * (timeTick * WallRunAwayFromWallBeforeMoveingVelocityScale), UpdatedComponent->GetComponentQuat(), true, work.Hit);
+			SafeMoveUpdatedComponent(CurrentWallNormal * (timeTick * WallRunAwayFromWallBeforeMoveingVelocityScale), UpdatedComponent->GetComponentQuat(), true, work.Hit);
 
 			//壁に沿って移動する。
 			SafeMoveUpdatedComponent(Delta, UpdatedComponent->GetComponentQuat(), true, work.Hit);
@@ -342,7 +517,7 @@ void ULyraWRCharacterMovementComponent::PhysWallRun(float deltaTime, int32 Itera
 			if (work.Hit.bBlockingHit)
 			{
 				//壁をぶつかったところに変更
-				WallNormal = work.Hit.Normal;
+				CurrentWallNormal = work.Hit.Normal;
 
 				//予定していた移動量と実際の移動量を元に、ぶつかった壁沿いの移動量の算出
 				const auto Delta2 = WallRun_CalcDeltaAfterBlocked(WallRunStatus, Delta, work.Hit.Location - OldLocation, work.Hit.Normal);
@@ -354,10 +529,10 @@ void ULyraWRCharacterMovementComponent::PhysWallRun(float deltaTime, int32 Itera
 			}
 
 			//壁方向に押し付ける
-			SafeMoveUpdatedComponent(-WallNormal * (timeTick * WallRunAttractionVelocityScale * work.ScaledCapsuleRadius), UpdatedComponent->GetComponentQuat(), true, work.Hit);
+			SafeMoveUpdatedComponent(-CurrentWallNormal * (timeTick * WallRunAttractionVelocityScale * work.ScaledCapsuleRadius), UpdatedComponent->GetComponentQuat(), true, work.Hit);
 
 			//壁の法線を保存しておく
-			WallRunNormal = WallNormal;
+			WallNormal = CurrentWallNormal;
 #endif
 			work.UpdatedComponentLocation = UpdatedComponent->GetComponentLocation();
 			work.UpdatedComponentRightVector = UpdatedComponent->GetRightVector();
@@ -366,7 +541,7 @@ void ULyraWRCharacterMovementComponent::PhysWallRun(float deltaTime, int32 Itera
 		// If we didn't move at all this iteration then abort (since future iterations will also be stuck).
 		if (work.UpdatedComponentLocation == OldLocation)
 		{
-			//UE_LOG(LogTemp, Warning, TEXT("Not update location."));
+			//UE_LOG(LogTemp, Log, TEXT("Not update location."));
 			remainingTime = 0.f;
 			break;
 		}
@@ -463,14 +638,14 @@ inline bool ULyraWRCharacterMovementComponent::WallRunCollision_IsWallFound(FWal
 	//壁が見つからないか
 	if (!work.Hit.IsValidBlockingHit())
 	{
-		//UE_LOG(LogTemp, Warning, TEXT("Wall Not Found."));
+		//UE_LOG(LogTemp, Log, TEXT("Wall Not Found."));
 		return false;
 	}
 	//加速が壁から離れる向きか
 	//work.Hit.IsValidBlockingHit() はここに来る時点でtrueなのでチェックしない
 	else if (/* work.Hit.IsValidBlockingHit() && */ WallRun_IsPullAway(a, work.Hit.Normal))
 	{
-		//UE_LOG(LogTemp, Warning, TEXT("Pull Away."));
+		//UE_LOG(LogTemp, Log, TEXT("Pull Away."));
 		return false;
 	}
 
@@ -489,13 +664,13 @@ inline bool ULyraWRCharacterMovementComponent::WallRunCollision_IsFinished(FWall
 	//床が近いか
 	else if (WallRunCollision_LineTraceFloor(work))
 	{
-		//UE_LOG(LogTemp, Warning, TEXT("Floor is near."));
+		//UE_LOG(LogTemp, Log, TEXT("Floor is near."));
 		return true;
 	}
 	//壁がないか
 	else if (!WallRunCollision_LineTraceWall(work, WallRunStatus))
 	{
-		//UE_LOG(LogTemp, Warning, TEXT("Wall not found."));
+		//UE_LOG(LogTemp, Log, TEXT("Wall not found."));
 		return true;
 	}
 	return false;
@@ -513,9 +688,9 @@ inline float ULyraWRCharacterMovementComponent::WallRun_CalcToWall(float ScaledC
 }
 
 
-inline bool ULyraWRCharacterMovementComponent::WallRun_IsPullAway(const FVector& a, const FVector& WallNormal) const
+inline bool ULyraWRCharacterMovementComponent::WallRun_IsPullAway(const FVector& a, const FVector& CurrentWallNormal) const
 {
-	check(!WallNormal.IsNearlyZero());
+	check(!CurrentWallNormal.IsNearlyZero());
 
 	//加速度がない場合は false を返す（壁から離れない）
 	if (a.IsNearlyZero())
@@ -527,7 +702,7 @@ inline bool ULyraWRCharacterMovementComponent::WallRun_IsPullAway(const FVector&
 	//加速方向と壁の法線の内積(=余弦) = 1: 壁から離れようと加速している, 0: 壁に沿って加速している,  -1: 壁に向かって加速している
 	//cos と sin を比較しているが 「sin(x) = cos(PI/2 - x)」なので「壁と成す角の sin = 法線と成す角の cos」というのを利用している。
 	//要は 加速方向と壁がなす角が WallRunPullAwayAngle より大きいなら true を返す。
-	return (float)(a.GetSafeNormal() | WallNormal) > SinPullAwayAngle;
+	return (float)(a.GetSafeNormal() | CurrentWallNormal) > SinPullAwayAngle;
 }
 
 inline bool ULyraWRCharacterMovementComponent::WallRun_IsEnoughVelocity(const FVector& v, bool verbose) const
@@ -541,7 +716,7 @@ inline bool ULyraWRCharacterMovementComponent::WallRun_IsEnoughVelocity(const FV
 	else if (v.Z < -MaxVerticalDownWallRunSpeed)
 	{
 		//if (verbose)
-		//	UE_LOG(LogTemp, Warning, TEXT("Too Heigh Fall Down Velocity."));
+		//	UE_LOG(LogTemp, Log, TEXT("Too Heigh Fall Down Velocity."));
 		return false;
 	}
 	return true;
@@ -560,7 +735,7 @@ inline bool ULyraWRCharacterMovementComponent::WallRun_IsEnoughVelocity2D(const 
 	if (SizeSquared2D < SquaredMinWallRunSpeed)
 	{
 		//if (verbose)
-		//	UE_LOG(LogTemp, Warning, TEXT("Too Low Velocity."));
+		//	UE_LOG(LogTemp, Verbose, TEXT("Too Low Velocity."));
 		return false;
 	}
 	return true;
@@ -587,7 +762,7 @@ inline float ULyraWRCharacterMovementComponent::WallRun_GetGravityWall(const FVe
 	}
 }
 
-inline FVector ULyraWRCharacterMovementComponent::WallRun_CalcDeltaAfterBlocked(EWallRunStatus WallRunStatus, const FVector& Delta, const FVector& DeltaN, const FVector& WallNormal) const
+inline FVector ULyraWRCharacterMovementComponent::WallRun_CalcDeltaAfterBlocked(EWallRunStatus WallRunStatus, const FVector& Delta, const FVector& DeltaN, const FVector& CurrentWallNormal) const
 {
 	check(WallRunStatus != EWallRunStatus::WRS_None);
 
@@ -597,8 +772,8 @@ inline FVector ULyraWRCharacterMovementComponent::WallRun_CalcDeltaAfterBlocked(
 	auto Alpha = (float)(Delta.Size2D() - DeltaN.Size2D());
 
 	//壁沿い平面ベクトルを作り、移動できなかった移動量をかけ、左右の向きを整える
-	//auto Delta2 = WallNormal.Cross(FVector::UpVector).GetSafeNormal2D() * Alpha * ((WallRunStatus == EWallRunStatus::WRS_Right) ? -1.f : 1.f);
-	auto Delta2 = FVector::UpVector.Cross(WallNormal).GetSafeNormal2D() * Alpha * ((WallRunStatus == EWallRunStatus::WRS_Right) ? 1.f : -1.f);
+	//auto Delta2 = CurrentWallNormal.Cross(FVector::UpVector).GetSafeNormal2D() * Alpha * ((WallRunStatus == EWallRunStatus::WRS_Right) ? -1.f : 1.f);
+	auto Delta2 = FVector::UpVector.Cross(CurrentWallNormal).GetSafeNormal2D() * Alpha * ((WallRunStatus == EWallRunStatus::WRS_Right) ? 1.f : -1.f);
 
 	//Z成分は残りをそのまま使う
 	Delta2.Z = Delta.Z - DeltaN.Z;
@@ -619,7 +794,6 @@ inline ULyraWRCharacterMovementComponent::FWallRunCollisionWork ULyraWRCharacter
 	};
 }
 
-
 float ULyraWRCharacterMovementComponent::CapR() const
 {
 	return CharacterOwner->GetCapsuleComponent()->GetScaledCapsuleRadius();
@@ -639,3 +813,71 @@ FCollisionQueryParams ULyraWRCharacterMovementComponent::GetIgnoreCharacterParam
 	Params.AddIgnoredActor(CharacterOwner);
 	return Params;
 }
+
+bool ULyraWRCharacterMovementComponent::IsWallRunEnable()const
+{
+#if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
+	return !Stamina.GetSaved().bOverheat;
+#else
+	return Safe_bEnableWallRun;
+#endif
+}
+
+#if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
+#else
+void ULyraWRCharacterMovementComponent::SetWallRunEnable(bool bEnableWallRun)
+{
+	if (Safe_bEnableWallRun != bEnableWallRun)
+	{
+		Safe_bEnableWallRun = bEnableWallRun;
+		//UKismetSystemLibrary::PrintString(PawnOwner, FString::Printf(TEXT("WallRun SetWallRunEnable(%d)"), bEnableWallRun), false);
+	}
+}
+#endif
+
+#if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
+const FAutoRecoverableAttributeSetting& ULyraWRCharacterMovementComponent::GetWallRunSettings()const
+{
+	return Stamina.Settings;
+//	return Settings;
+}
+
+void ULyraWRCharacterMovementComponent::MovementModeChangedToWallRun(bool bStart)
+{
+	auto func = [this](float CurrentValue, float AddValuePerSec, float Duration, bool bFinished)->void
+		{
+			FLyraWallRunStaminaMessage Message;
+			Message.Instigator = GetOwner();
+			Message.CurrentValue = CurrentValue;
+			Message.AddValuePerSec = AddValuePerSec;
+			Message.Duration = Duration;
+			Message.bFinished = bFinished;
+			UGameplayMessageSubsystem& MessageSystem = UGameplayMessageSubsystem::Get(GetWorld());
+			MessageSystem.BroadcastMessage(TAG_Ability_WallRun_Stamina_Message, Message);
+		};
+	Stamina.OnStatusChanged(bStart, func);
+}
+
+void ULyraWRCharacterMovementComponent::UpdateStamina(float DeltaSeconds)
+{
+	//if (GetWallRunStatus() != EWallRunStatus::WRS_None)
+	//{
+	//	UE_LOG(LogTemp, Log, TEXT("WallRun UpdateStamina() CurrentValue=%f"), Stamina.Saved.CurrentValue);
+	//}
+	auto func = [this](float CurrentValue, float AddValuePerSec, float Duration, bool bFinished)->void
+		{
+			FLyraWallRunStaminaMessage Message;
+			Message.Instigator = GetOwner();
+			Message.CurrentValue = CurrentValue;
+			Message.AddValuePerSec = AddValuePerSec;
+			Message.Duration = Duration;
+			Message.bFinished = bFinished;
+			UGameplayMessageSubsystem& MessageSystem = UGameplayMessageSubsystem::Get(GetWorld());
+			MessageSystem.BroadcastMessage(TAG_Ability_WallRun_Stamina_Message, Message);
+		};
+	Stamina.OnUpdate(GetWallRunStatus() != EWallRunStatus::WRS_None, DeltaSeconds, func);
+}
+
+#else
+#endif
+
