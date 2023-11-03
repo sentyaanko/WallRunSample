@@ -30,15 +30,3 @@ public:
 	bool bFinished = false;
 };
 
-USTRUCT(BlueprintType)
-struct FLyraWallRunEnabledMessage
-{
-	GENERATED_BODY()
-
-public:
-	UPROPERTY(BlueprintReadWrite)
-	TObjectPtr<AActor> Instigator = nullptr;
-
-	UPROPERTY(BlueprintReadWrite)
-	bool bEnabled = false;
-};

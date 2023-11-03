@@ -15,10 +15,8 @@
 #include "Kismet/KismetSystemLibrary.h"
 
 
-#if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
 UE_DEFINE_GAMEPLAY_TAG_STATIC(TAG_Ability_WallRun_Stamina_Message, "Ability.WallRun.Stamina.Message");
 
-#endif
 
 //Helper Macros
 
@@ -57,11 +55,7 @@ float MacroDuration = 10.f;
 void ULyraWRCharacterMovementComponent::FSavedMove_WallRun::Clear()
 {
 	Super::Clear();
-#if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
 	Saved_Stamina = FSavedAutoRecoverableAttribute();
-#else
-	Saved_bEnableWallRun = true;
-#endif
 }
 
 void ULyraWRCharacterMovementComponent::FSavedMove_WallRun::SetMoveFor(ACharacter* C, float InDeltaTime, FVector const& NewAccel, FNetworkPredictionData_Client_Character& ClientData)
@@ -75,22 +69,14 @@ void ULyraWRCharacterMovementComponent::FSavedMove_WallRun::SetInitialPosition(A
 	Super::SetInitialPosition(C);
 
 	auto CharacterMovement = Cast< ULyraWRCharacterMovementComponent>(C->GetCharacterMovement());
-#if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
 	Saved_Stamina = CharacterMovement->Stamina.GetSaved();
-#else
-	Saved_bEnableWallRun = CharacterMovement->Safe_bEnableWallRun;
-#endif
 }
 
 bool ULyraWRCharacterMovementComponent::FSavedMove_WallRun::CanCombineWith(const FSavedMovePtr& NewMove, ACharacter* InCharacter, float MaxDelta) const
 {
 	auto NewWallRunMove = static_cast<FSavedMove_WallRun*>(NewMove.Get());
 
-#if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
 	if (!FSavedAutoRecoverableAttribute::CanCombineWith(Saved_Stamina, NewWallRunMove->Saved_Stamina))
-#else
-	if (Saved_bEnableWallRun != NewWallRunMove->Saved_bEnableWallRun)
-#endif
 	{
 		return false;
 	}
@@ -102,13 +88,9 @@ void ULyraWRCharacterMovementComponent::FSavedMove_WallRun::CombineWith(const FS
 {
 	Super::CombineWith(OldMove, InCharacter, PC, OldStartLocation);
 
-#if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
 	auto CharacterMovement = Cast< ULyraWRCharacterMovementComponent>(InCharacter->GetCharacterMovement());
 	auto OldWallRunMove = static_cast<const FSavedMove_WallRun*>(OldMove);
 	CharacterMovement->Stamina.GetSaved() = OldWallRunMove->Saved_Stamina;
-#else
-	//Saved_bEnableWallRun が異なるとコンバインしないので、ここでやることはない。
-#endif
 }
 
 void ULyraWRCharacterMovementComponent::FSavedMove_WallRun::PrepMoveFor(ACharacter* C)
@@ -116,12 +98,7 @@ void ULyraWRCharacterMovementComponent::FSavedMove_WallRun::PrepMoveFor(ACharact
 	Super::PrepMoveFor(C);
 
 	auto CharacterMovement = Cast< ULyraWRCharacterMovementComponent>(C->GetCharacterMovement());
-#if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
 	CharacterMovement->Stamina.GetSaved() = Saved_Stamina;
-#else
-	//CharacterMovement->Safe_bEnableWallRun = Saved_bEnableWallRun;
-	CharacterMovement->SetWallRunEnable(Saved_bEnableWallRun);
-#endif
 }
 
 uint8 ULyraWRCharacterMovementComponent::FSavedMove_WallRun::GetCompressedFlags() const
@@ -147,11 +124,7 @@ FSavedMovePtr ULyraWRCharacterMovementComponent::FNetworkPredictionData_Client_C
 
 ULyraWRCharacterMovementComponent::ULyraWRCharacterMovementComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
-#if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
 	, Stamina()
-#else
-	, Safe_bEnableWallRun(true)
-#endif
 	, WallNormal(0.f)
 {
 	//Maximum distance character is allowed to lag behind server location when interpolating between updates.
@@ -194,10 +167,7 @@ void ULyraWRCharacterMovementComponent::UpdateFromCompressedFlags(uint8 Flags)
 
 void ULyraWRCharacterMovementComponent::UpdateCharacterStateBeforeMovement(float DeltaSeconds)
 {
-#if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
 	UpdateStamina(DeltaSeconds);
-#else
-#endif
 
 	if (IsFalling())
 	{
@@ -247,22 +217,16 @@ void ULyraWRCharacterMovementComponent::OnMovementModeChanged(EMovementMode Prev
 				//UKismetSystemLibrary::PrintString(PawnOwner, FString::Printf(TEXT("WallRun OnMovementModeChanged Init WallRuNormal")), false);
 			}
 		}
-#if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
 		//WallRun を始めた。
 		MovementModeChangedToWallRun(true);
-#else
-#endif
 	}
 	
 	if (IsWallRunMode(PreviousMovementMode, PreviousCustomMode))
 	{
 		WallNormal = FVector::ZeroVector;
 
-#if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
 		//WallRun を止めた。
 		MovementModeChangedToWallRun(false);
-#else
-#endif
 	}
 }
 
@@ -816,30 +780,12 @@ FCollisionQueryParams ULyraWRCharacterMovementComponent::GetIgnoreCharacterParam
 
 bool ULyraWRCharacterMovementComponent::IsWallRunEnable()const
 {
-#if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
 	return !Stamina.GetSaved().bOverheat;
-#else
-	return Safe_bEnableWallRun;
-#endif
 }
 
-#if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
-#else
-void ULyraWRCharacterMovementComponent::SetWallRunEnable(bool bEnableWallRun)
-{
-	if (Safe_bEnableWallRun != bEnableWallRun)
-	{
-		Safe_bEnableWallRun = bEnableWallRun;
-		//UKismetSystemLibrary::PrintString(PawnOwner, FString::Printf(TEXT("WallRun SetWallRunEnable(%d)"), bEnableWallRun), false);
-	}
-}
-#endif
-
-#if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
 const FAutoRecoverableAttributeSetting& ULyraWRCharacterMovementComponent::GetWallRunSettings()const
 {
 	return Stamina.Settings;
-//	return Settings;
 }
 
 void ULyraWRCharacterMovementComponent::MovementModeChangedToWallRun(bool bStart)
@@ -862,7 +808,14 @@ void ULyraWRCharacterMovementComponent::UpdateStamina(float DeltaSeconds)
 {
 	//if (GetWallRunStatus() != EWallRunStatus::WRS_None)
 	//{
-	//	UE_LOG(LogTemp, Log, TEXT("WallRun UpdateStamina() CurrentValue=%f"), Stamina.Saved.CurrentValue);
+	//	//UE_LOG(LogTemp, Log, TEXT("WallRun UpdateStamina() CurrentValue=%f"), Stamina.Saved.CurrentValue);
+	//	auto num = ClientPredictionData ? ClientPredictionData->SavedMoves.Num() : 0;
+	//	UE_LOG(LogTemp, Log, TEXT("WallRun SavedMove Num=%d"), num);
+
+	//	auto sizeofFSavedMove_Character = sizeof(FSavedMove_Character);
+	//	auto sizeofFSavedMove_WallRun = sizeof(FSavedMove_WallRun);
+	//	auto sizeofSaved_Stamina = sizeof(FSavedAutoRecoverableAttribute);
+	//	UE_LOG(LogTemp, Log, TEXT("WallRun SavedMove sizeof=%d, %d, %d"), sizeofFSavedMove_Character, sizeofFSavedMove_WallRun, sizeofSaved_Stamina);
 	//}
 	auto func = [this](float CurrentValue, float AddValuePerSec, float Duration, bool bFinished)->void
 		{
@@ -877,7 +830,4 @@ void ULyraWRCharacterMovementComponent::UpdateStamina(float DeltaSeconds)
 		};
 	Stamina.OnUpdate(GetWallRunStatus() != EWallRunStatus::WRS_None, DeltaSeconds, func);
 }
-
-#else
-#endif
 

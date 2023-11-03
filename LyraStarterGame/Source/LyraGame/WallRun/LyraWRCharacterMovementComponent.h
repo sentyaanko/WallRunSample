@@ -7,20 +7,6 @@
 #include "Character/LyraCharacterMovementComponent.h"
 #include "LyraWRCharacterMovementComponent.generated.h"
 
-//	LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
-//		1 の場合
-//			CharacterMovementComponent の SavedMove に WallRun のスタミナに関する変数を保存する実装を有効にする。
-//		0 の場合
-//			CharacterMovementComponent の SavedMove には WallRun の実行可能状態を住めす変数のみを保存する実装を有効にする。
-//			（スタミナのような WallRun 自体ではない実装を MovementComponent 内で管理しないようにする。）
-//	LYRA_WALLRUN_STAMINA_IN_ で始まるマクロについて
-//		ヘッダ内は以下のような記述をしている。
-//			#if 1 // LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
-//		#ifdef や #if の定数式でマクロを利用していないのは UBT がそれらによる UPROPERTY 等の有効/無効の切り替えをサポートしない為（利用しようとするとエラーとなる）。
-//		有効化/無効化する際は該当の #if ディレクティブ等の定数式を書き換えること。
-#define LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE	1
-
-
 /**
  * @brief このプロジェクトで使用する CustomMovementMode を表す列挙体。
  */
@@ -99,13 +85,8 @@ private:
 	public:
 		typedef FSavedMove_Character Super;
 
-#if 1 // if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
 		// @brief FSavedMove でバッファリングする必要があるスタミナ用データ。
 		FSavedAutoRecoverableAttribute Saved_Stamina;
-#else
-		// @brief WallRun が可能か。
-		uint8 Saved_bEnableWallRun : 1;
-#endif
 
 		/** Clear saved move properties, so it can be re-used. */
 		virtual void Clear() override;
@@ -230,15 +211,17 @@ public:
 
 	//~End WallRun functions
 
+	//~Stamina functions
+
+	// @brief Settings を取得する。
+	// @return Settings 。
+	UFUNCTION(BlueprintPure, Category = "LyraWR|WallRun") const FAutoRecoverableAttributeSetting& GetWallRunSettings()const;
+
+	//~End Stamina functions
+
 	//~End Blueprint Callable functions
 
 public:
-#if 1 // if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
-#else
-	// @brief WallRun の実行可能状態の設定。
-	// @param bEnableWallRun WallRun が実行可能かどうか。
-	void SetWallRunEnable(bool bEnableWallRun);
-#endif
 	// @brief WallRun の実行可能状態を取得する。
 	// @retval true 実行可能。
 	// @retval false 実行不可。
@@ -378,13 +361,7 @@ private:
 	//~End Helper functions
 
 
-#if 1 // if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
 	//~Stamina functions
-public:
-	// @brief Settings を取得する。
-	// @return Settings 。
-	const FAutoRecoverableAttributeSetting& GetWallRunSettings()const;
-
 private:
 	// @brief MovementMode が WallRun に変わった/ではなくなった際に呼び出される。
 	// @param bStart true WallRun に変わった, false WallRun ではなくなった。
@@ -394,11 +371,7 @@ private:
 	// @param DeltaSeconds デルタ時間。
 	void UpdateStamina(float DeltaSeconds);
 
-	//~End Helper functions
-
-#else
-#endif
-
+	//~End Stamina functions
 
 	//~WallRun Properties
 protected:
@@ -451,23 +424,14 @@ protected:
 	//~End WallRun Properties
 
 	//~Stamina Properties
-#if 1 // if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
 protected:
 	// @brief スタミナの状況。設定用の構造体を内包するので、 Blueprint で設定可能にしている。
 	UPROPERTY(EditDefaultsOnly, Category = "LyraWR|WallRun") FSafeAutoRecoverableAttribute	Stamina;
-#else
-#endif
 
 	//~End Stamina Properties
 
 
 private:
-#if 1 // if LYRA_WALLRUN_STAMINA_IN_SAVED_MOVE
-#else
-	// @brief WallRun の実行可能状態。 
-	bool Safe_bEnableWallRun;
-#endif
-
 	// @brief 壁の法線。 WallRun していないときは ZeroVector になる。
 	FVector WallNormal;
 };
